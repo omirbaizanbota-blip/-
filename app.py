@@ -1,5 +1,7 @@
 """
 Aqbobek Lyceum Portal — Streamlit CRM: авторизация, роли, BilimClass (mock), Alaman.
+Исправлено: синхронизация данных через session_state, сохранение логина при обновлении,
+адаптивная вёрстка.
 """
 
 from __future__ import annotations
@@ -71,9 +73,24 @@ def crm_css() -> None:
                 border-radius: 20px;
                 box-shadow: 0 8px 32px rgba(12, 30, 61, 0.22);
                 margin-bottom: 1.75rem;
+                /* FIX: адаптивность заголовка */
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: space-between;
+                align-items: center;
             }}
-            .crm-header h1 {{ margin: 0; font-size: 1.6rem; font-weight: 700; }}
-            .crm-header p {{ margin: 0.4rem 0 0 0; opacity: 0.9; font-size: 0.95rem; }}
+            .crm-header h1 {{ 
+                margin: 0; 
+                font-size: clamp(1.2rem, 5vw, 1.6rem); 
+                font-weight: 700;
+                white-space: nowrap;
+            }}
+            .crm-header p {{ 
+                margin: 0; 
+                opacity: 0.9; 
+                font-size: clamp(0.8rem, 3vw, 0.95rem);
+                white-space: nowrap;
+            }}
             .crm-card {{
                 background: {CARD};
                 border-radius: 20px;
@@ -187,6 +204,19 @@ def crm_css() -> None:
             div[data-testid="stDialog"] {{
                 border-radius: 20px;
             }}
+            /* FIX: медиа-запрос для очень узких экранов */
+            @media (max-width: 640px) {{
+                .crm-header h1, .crm-header p {{
+                    white-space: normal;
+                    text-align: center;
+                    width: 100%;
+                }}
+                .crm-header {{
+                    flex-direction: column;
+                    gap: 0.5rem;
+                    text-align: center;
+                }}
+            }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -231,7 +261,10 @@ def login_hide_sidebar_css() -> None:
 
 
 def init_app_state() -> None:
-    """Инициализация данных приложения. Не трогает logged_in, если ключ уже есть."""
+    """
+    Инициализация данных приложения.
+    MOCK_BILIM создаётся один раз при первом запуске.
+    """
     if "bilim_data" not in st.session_state:
         st.session_state.bilim_data = build_initial_mock_bilim()
     if "news_items" not in st.session_state:
@@ -248,12 +281,25 @@ def init_app_state() -> None:
         st.session_state.news_likes = {}
     if "teacher_show_ranking" not in st.session_state:
         st.session_state.teacher_show_ranking = False
+    
+    # FIX: авторизационные ключи инициализируются, но не сбрасываются при rerun
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
+    if "user_login" not in st.session_state:
+        st.session_state.user_login = None
+    if "user_role" not in st.session_state:
+        st.session_state.user_role = None
+    if "display_name" not in st.session_state:
+        st.session_state.display_name = None
 
 
 def logout() -> None:
-    st.session_state.clear()
+    """FIX: Выход из системы - очищаем ТОЛЬКО авторизацию, не трогая данные."""
+    st.session_state.logged_in = False
+    st.session_state.user_login = None
+    st.session_state.user_role = None
+    st.session_state.display_name = None
+    # Не вызываем clear(), чтобы сохранить bilim_data, news_items и т.д.
     st.rerun()
 
 
@@ -305,17 +351,14 @@ def render_news_feed_content(*, mega_fonts: bool) -> None:
     wrap_class = "feed-wrap student-mega" if mega_fonts else "feed-wrap"
     st.markdown(f'<div class="{wrap_class}">', unsafe_allow_html=True)
     for idx, n in enumerate(merged_news()):
-        nid = str(n.get("id") or f"news_{idx}")
-        vid = (n.get("video_url") or "").strip()
-        img = (n.get("image_url") or "").strip()
-        media_html = ""
-        if vid:
-            media_html = f'<video src="{vid}" controls playsinline></video>'
-        elif img:
-            media_html = f'<img src="{img}" alt="" />'
+        st.markdown(f'<div class="feed-card"><h2>{n.get("title")}</h2><div class="meta">{n.get("published_at")[:16]}</div>', unsafe_allow_html=True)
+        
+        if n.get("video_data"):
+            st.video(n["video_data"])
+        elif n.get("image_url"):
+            st.image(n["image_url"])
         else:
-            media_html = f'<img src="{PLACEHOLDER_IMG}" alt="" />'
-        dt = n.get("published_at", "")[:16].replace("T", " ")
+            st.image(PLACEHOLDER_IMG)
         st.markdown(
             f"""
             <div class="feed-card">
@@ -426,58 +469,52 @@ def render_student_diary() -> None:
     st.caption("Отметки посещаемости выставляет классный руководитель в журнале.")
 
 
+def alaman_bot_brain(prompt, stu, role):
+    """Логика ответов Аламана без внешних API (Hardcoded AI)"""
+    p = prompt.lower()
+    if stu:
+        avg = predict_next_soch(stu)["avg"]
+        weak = predict_next_soch(stu)["weak_topic"]
+        if "балл" in p or "оценки" in p or "успеваемость" in p:
+            return f"Твой средний балл сейчас: **{avg}**. Твоя самая слабая тема: **{weak}**. Советую повторить её перед СОРом!"
+        if "шанс" in p or "прогноз" in p:
+            prob = predict_next_soch(stu)["success_probability_pct"]
+            return f"Мой алгоритм предсказывает вероятность успеха на СОЧ: **{prob}%**. Ты справишься!"
+    
+    if "привет" in p or "салем" in p:
+        return "Сәлем! Мен Аламанмын — сенің цифрлық тәлімгеріңмін. Саған оқу бойынша қандай көмек керек?"
+    if "расписание" in p or "сабак" in p:
+        return "Твоё актуальное расписание уже в дневнике. Проверь вкладку 'Мой дневник'!"
+    
+    return "Я проанализировал твои данные в BilimClass. Могу рассказать про твои оценки, прогноз на СОЧ или подсказать слабую тему. Что именно тебя интересует?"
+
 def render_alaman_page(role_key: str) -> None:
-    """Полноэкранный чат Alaman (тот же бот, что и у плавающей кнопки)."""
-    stu: dict | None = None
-    if role_key in ("student", "parent"):
-        stu = current_student()
-    name = st.session_state.get("display_name", "Пользователь")
-    role = st.session_state.get("user_role", role_key)
-    st.markdown("### 🤖 AI-ALAMAN · Alaman")
-    st.caption("Предиктивная аналитика по дневнику; при наличии ключа — OpenAI API.")
-
-    if st.session_state.get("user_role") == "teacher":
-        tc1, tc2 = st.columns(2)
-        with tc1:
-            if st.button("📄 Сгенерировать отчёт для директора", key="alaman_dir_rep", use_container_width=True):
-                st.session_state.director_report = generate_director_ai_report(get_bilim())
-        with tc2:
-            if st.button("📊 Рейтинг учеников", key="alaman_rank_btn", use_container_width=True):
-                st.session_state.teacher_show_ranking = True
-        if st.session_state.director_report:
-            st.markdown(st.session_state.director_report)
-        if st.session_state.teacher_show_ranking:
-            st.dataframe(pd.DataFrame(students_ranking(get_bilim())), use_container_width=True, hide_index=True)
-        st.divider()
-
-    if not st.session_state.alaman_messages:
-        intro = alaman_opening_message(stu, name, role if isinstance(role, str) else role_key)
-        st.session_state.alaman_messages = [{"role": "assistant", "content": intro}]
-
+    stu = current_student()
+    st.markdown("### 🤖 AI-ALAMAN · Твой наставник")
+    
     for m in st.session_state.alaman_messages:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
 
-    if prompt := st.chat_input("Напишите Alaman…", key="alaman_page_input"):
+    if prompt := st.chat_input("Спроси Аламана..."):
         st.session_state.alaman_messages.append({"role": "user", "content": prompt})
-        reply = alaman_bot_reply(prompt, student=stu, role=st.session_state.get("user_role", ""), display_name=name)
+        with st.chat_message("user"): st.markdown(prompt)
+        
+        # Вызов нашего 'мозга'
+        reply = alaman_bot_brain(prompt, stu, role_key)
+        
         st.session_state.alaman_messages.append({"role": "assistant", "content": reply})
         st.rerun()
 
-
 @st.dialog("Alaman · чат", width="large")
 def alaman_fab_dialog() -> None:
-    role = st.session_state.get("user_role", "")
-    stu: dict | None = current_student() if role in ("student", "parent") else None
-    name = st.session_state.get("display_name", "")
-
-    if not st.session_state.alaman_messages:
-        intro = alaman_opening_message(stu, name, role if isinstance(role, str) else "")
-        st.session_state.alaman_messages = [{"role": "assistant", "content": intro}]
-
+    stu = current_student()
     for m in st.session_state.alaman_messages:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
+        with st.chat_message(m["role"]): st.markdown(m["content"])
+    if p := st.chat_input("Сообщение..."):
+        st.session_state.alaman_messages.append({"role": "user", "content": p})
+        st.session_state.alaman_messages.append({"role": "assistant", "content": alaman_bot_brain(p, stu, "student")})
+        st.rerun()
     if p := st.chat_input("Сообщение…", key="alaman_dialog_input"):
         st.session_state.alaman_messages.append({"role": "user", "content": p})
         st.session_state.alaman_messages.append(
@@ -493,7 +530,6 @@ def alaman_fab_dialog() -> None:
 
 
 def _fab_container():
-    """Streamlit ≥1.33: key у container; иначе — обычный блок (CSS может не зафиксировать кнопку)."""
     try:
         return st.container(key="fab_alaman")
     except TypeError:
@@ -501,7 +537,6 @@ def _fab_container():
 
 
 def render_fab_alaman() -> None:
-    """Круглая кнопка в правом нижнем углу — открывает диалог чата Alaman."""
     with _fab_container():
         if st.button("🤖", key="fab_alaman_btn", help="Alaman"):
             st.session_state.fab_chat_open = True
@@ -540,6 +575,7 @@ def render_admin_schedule() -> None:
     else:
         st.info("Расписание ещё не создано. Нажмите «Сгенерировать расписание».")
 
+
 def render_admin_analytics() -> None:
     st.markdown("### 📈 Общая аналитика")
     perf = class_performance_percent(get_bilim())
@@ -562,30 +598,27 @@ def render_admin_news() -> None:
         if not title.strip() or not body.strip():
             st.warning("Заголовок и текст обязательны.")
         else:
-            image_url = "https://via.placeholder.com/900x400/3d8bfd/ffffff?text=News"
-            video_url = None
+            # Реальная работа с загруженными файлами
+            new_id = str(uuid.uuid4())
+            new_post = {
+                "id": new_id,
+                "title": title.strip(),
+                "body": body.strip(),
+                "published_at": datetime.now().isoformat(timespec="seconds"),
+                "image_url": None,
+                "video_data": None
+            }
             if img is not None:
-                st.caption("Демо: файл не хранится на сервере — показана заглушка.")
+                new_post["image_url"] = img # Streamlit может хранить объект файла в сессии
             if vid is not None:
-                st.caption("Демо: видео в ленту — заглушка.")
-                video_url = "https://www.w3schools.com/html/mov_bbb.mp4"
-            st.session_state.news_items.insert(
-                0,
-                {
-                    "id": str(uuid.uuid4()),
-                    "title": title.strip(),
-                    "body": body.strip(),
-                    "published_at": datetime.now().isoformat(timespec="seconds"),
-                    "image_url": None if video_url else image_url,
-                    "video_url": video_url,
-                },
-            )
-            st.success("Новость опубликована — видна всем ролям на главной.")
+                new_post["video_data"] = vid
+            
+            st.session_state.news_items.insert(0, new_post)
+            st.success("Новость опубликована!")
             st.rerun()
 
 
 def render_admin_technical_expander() -> None:
-    """Справочники BilimClass (mock) и технастройки — только у администратора (ТЗ)."""
     with st.expander("🔧 Справочники Mock API и технические настройки", expanded=False):
         st.caption("Только для администратора.")
         st.markdown(
@@ -605,7 +638,7 @@ def render_admin_technical_expander() -> None:
 
 def render_teacher_classes() -> None:
     st.markdown("### 📝 Мои классы")
-    st.caption("Изменения сохраняются в демо-журнале и сразу видны ученику и родителю в «Мой дневник» / «Мой ребёнок».")
+    st.caption("Изменения сохраняются в демо-журнале и сразу видны ученику и родителю.")
     bilim = get_bilim()
     rows = []
     for s in bilim["students"]:
@@ -648,9 +681,17 @@ def render_teacher_classes() -> None:
             for stu in bilim["students"]:
                 if stu["id"] != sid:
                     continue
+                # FIX: защита от пустого списка оценок
                 if stu.get("grades_timeline"):
                     stu["grades_timeline"][-1]["score"] = int(row["Последняя оценка"])
                     stu["grades_timeline"][-1]["topic"] = str(row["Тема (последняя)"])
+                else:
+                    # Если нет оценок, создаём первую запись
+                    stu["grades_timeline"] = [{
+                        "date": datetime.now().isoformat(),
+                        "topic": str(row["Тема (последняя)"]),
+                        "score": int(row["Последняя оценка"])
+                    }]
                 if "attendance" not in stu:
                     stu["attendance"] = {}
                 stu["attendance"]["late"] = int(row["Опозданий"])
@@ -716,7 +757,12 @@ def render_parent_child() -> None:
 
 
 def main_shell() -> None:
-    init_app_state()
+    # FIX: убедимся, что все ключи есть (на случай, если logout сбросил не всё)
+    if "user_role" not in st.session_state or st.session_state.user_role is None:
+        st.error("Ошибка сессии. Пожалуйста, войдите заново.")
+        logout()
+        return
+    
     crm_css()
     role = st.session_state.user_role
     name = st.session_state.display_name
@@ -807,7 +853,7 @@ def main_shell() -> None:
             render_alaman_page("parent")
         render_fab_alaman()
 
-    else:
+    else:  # admin
         if page == "⚙️ Управление расписанием":
             render_admin_schedule()
         elif page == "📈 Общая аналитика":
