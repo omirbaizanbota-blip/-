@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from bilim_engine import *
+from bilim_engine import 
 
 # 1. СТИЛЬ ЖӘНЕ ДИЗАЙН (CSS)
 st.set_page_config(page_title="Aqbobek Lyceum", layout="wide")
